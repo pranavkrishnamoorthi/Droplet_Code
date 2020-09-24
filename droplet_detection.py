@@ -129,9 +129,9 @@ def main():
             # threshold to determine if a line is parallel or not
 
             if time.time() - start < calibration_time:
-                # den_img = cv2.fastNlMeansDenoisingColored(output_img, None, 10, 10, 7, 21)
-                # blur_img = cv2.GaussianBlur(den_img, (3, 3), 0)
-                gray_img = cv2.cvtColor(output_img, cv2.COLOR_BGR2GRAY)
+                den_img = cv2.fastNlMeansDenoisingColored(output_img, None, 10, 10, 7, 21)
+                blur_img = cv2.GaussianBlur(den_img, (3, 3), 0)
+                gray_img = cv2.cvtColor(den_img, cv2.COLOR_BGR2GRAY)
                 cv2.imshow("gray", gray_img)
 
                 # Calculate the gradient mag vector at all to determine the change in intensities for all values
