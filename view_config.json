@@ -1,0 +1,93 @@
+{
+    "features": [
+        {
+            "name": "GainRaw",
+            "type": "int",
+            "step": 1
+        },
+        {
+            "name": "Height",
+            "type": "int",
+            "value": 1080,
+            "unit": "px",
+            "step": 2
+        },
+        {
+            "name": "Width",
+            "type": "int",
+            "value": 1920,
+            "unit": "px",
+            "step": 2
+        },
+        {
+            "name": "CenterX",
+            "type": "bool"
+        },
+        {
+            "name": "CenterY",
+            "type": "bool"
+
+        },
+        {
+            "name": "OffsetX",
+            "type": "int",
+            "dependency": {"CenterX": False},
+            "unit": "px",
+            "step": 2
+        },
+        {
+            "name": "OffsetY",
+            "type": "int",
+            "dependency": {"CenterY": False},
+            "unit": "px",
+            "step": 2
+        },
+        {
+            "name": "AcquisitionFrameRateAbs",
+            "type": "int",
+            "unit": "fps",
+            "dependency": {"AcquisitionFrameRateEnable": True},
+            "max": 150,
+            "min": 1
+        },
+        {
+            "name": "AcquisitionFrameRateEnable",
+            "type": "bool"
+        },
+        {
+            "name": "ExposureAuto",
+            "type": "choice_text",
+            "options": ["Off", "Once", "Continuous"],
+            "style": {"button_width": "90px"}
+        },
+        {
+            "name": "ExposureTimeAbs",
+            "type": "int",
+            "dependency": {"ExposureAuto": "Off"},
+            "unit": "μs",
+            "step": 100,
+            "max": 35000,
+            "min": 500
+        },
+        {
+            "name": "BalanceWhiteAuto",
+            "type": "choice_text",
+            "options": ["Off", "Once", "Continuous"],
+            "style": {"button_width": "90px"}
+        },
+    ],
+    "features_layout": [
+        ("Height", "Width"), 
+        ("OffsetX", "CenterX"), 
+        ("OffsetY", "CenterY"), 
+        ("ExposureAuto", "ExposureTimeAbs"),
+        ("AcquisitionFrameRateAbs", "AcquisitionFrameRateEnable"),
+        ("BalanceWhiteAuto", "GainRaw")
+    ],
+    "actions_layout": [
+        ("StatusLabel"),
+        ("SaveConfig", "LoadConfig", "ContinuousShot", "SingleShot"), 
+        ("UserSet")
+    ],
+    "default_user_set": "UserSet3"
+}
