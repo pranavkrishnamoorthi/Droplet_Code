@@ -5,7 +5,7 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from pypylon import pylon 
+from pypylon import pylon
 import json
 
 from pypylon_opencv_viewer import BaslerOpenCVViewer
@@ -26,10 +26,13 @@ WIDTH = 672
 HEIGHT = 512
 
 CAMERA_RESOLUTION = 0.30
-CALIBRATION_TIME = 20
+CALIBRATION_TIME = 5
 
 MAX_POSSIBlE_RADIUS = 500
 MIN_POSSIBLE_RADIUS = 0
+
+OIL = 0
+WATER = 1
 
 # optimize these paramaters with heuristics during calibration phase
 accumulator_size = 200000
@@ -55,13 +58,18 @@ PRESSURE_MIN = None
 PRESSURE_MAX = None
 KP = 0.5
 KI = 0.5
+KD = 0
 pid = None
-k_pressure_radius = 0.5
+k_rad_press = 0.5
 all_circle_points = []
-
+ratio_height_rad = None
+current_height = 0
+CHANNEL_WIDTH = 200
 np_filter_lines = np.zeros((1, 8), dtype=int)
 filter_lines_just_create = True
-
+pid_has_been_set_up = False
+target_ratio = 0.5
+delta_pressure_thresh = 100
 #collect data
 data = {}
 data['radius'] = []
@@ -69,7 +77,15 @@ data['time_step'] = []
 tube_widths = []
 errors = []
 
+#actual_radius is the actual target radius in microns
+actual_radius = 50
 
+target_radius = 50
+
+
+def pid_setup(tgt_radius):
+    global pid
+    pid = PID(KP, KI, KD, setpoint = tgt_radius)
 
 def pressure_configuation():
   fgt_init()
@@ -81,14 +97,34 @@ def pressure_configuation():
 
 
 def droplet_regulation(tgt_radius, current_pressure):
-    pressure_error = tgt_radius - data['radius'][-1]
-    return min(max(current_pressure + k_rad_press * pressure_error, fgt_get_pressure(0) / 3), PRESSURE_MAX)
+    global target_ratio
+    
+    assert target_ratio != 0
 
+    radius_error = tgt_radius - data['radius'][-1]
+    pid_result = pid(data['radius'][-1])
+    new_pressure = pid_result * target_ratio
 
+    if new_pressure - current_pressure > delta_pressure_thresh:
+        while new_pressure - current_pressure > delta_pressure_thresh:
+            target_ratio -= 0.01
+            new_pressure = pid_result * target_ratio
+
+    elif current_pressure - new_pressure > delta_pressure_thresh:
+        while current_pressure - new_pressure > delta_pressure_thresh:
+            target_ratio += 0.01
+            new_pressure = pid_result * target_ratio
+
+    oil_pressure_min_limit = fgt_get_pressure(OIL) / 2.5
+    oil_pressure_max_limit = 2 * fgt_get_pressure(OIL)
+
+    return min(min(max(max(new_pressure, oil_pressure_min_limit), PRESSURE_MIN), oil_pressure_max_limit), PRESSURE_MAX)
 
 
 def log(data):
+
     print(data)
+    data['radius'] = [ratio_height_rad * r for r in data['radius']]
     df = pd.DataFrame(data)
     df = df.sort_values(by='time_step', ascending=True)
     df.plot(kind='line', x='time_step', y='radius')
@@ -101,11 +137,8 @@ def log(data):
 
 #find the perpendicular line thorugh vector projection
 def min_dist_lines(a1, b1, a2, b2):
-
     proj_a1_v = np.dot(a1 - a2, b2 - a2) / np.dot(b2 - a2, b2 - a2)
-
     dist_squared = np.linalg.norm(a1 - a2) ** 2  -  proj_a1_v ** 2
-
     return np.math.sqrt(dist_squared)
 
 def get_camera_info():
@@ -117,157 +150,6 @@ def get_camera_info():
       return None
 
 
-    global filter_lines_just_create
-    global np_filter_lines
-    if lines is not None:
-        line_pairs_dots = np.zeros((len(lines), len(lines)))
-
-        #find the pairs of lines that are the most paralell
-        
-        for i in range(len(lines)):
-            line_1 = lines[i][0]
-            for j in range(len(lines)):
-                print('hi')
-                if i <= j:
-                    line_pairs_dots[i,j] = 0
-                else:
-                    line_2 = lines[j][0]
-                    #print(line_1)
-                    #print(line_2)
-                    
-
-                    a1 = np.array(line_1[:2])
-                    b1 = np.array(line_1[2:])
-
-                    a2 = np.array(line_2[:2])
-                    b2 = np.array(line_2[2:])
-
-
-                    #print(b1 - a1)
-                    #print(b2 - a2)
-
-                    v1 = np.subtract(b1, a1)
-                    v2 = np.subtract(b2, a2)
-                    
-                #print(v1.shape)
-                    #print(v2.shape)
-                    line_pairs_dots[i,j] = np.dot(v1, v2)
-            
-
-
-        print(line_pairs_dots)
-        dot_pairs_indices= np.argsort(-1 * line_pairs_dots.flatten())
-        print(dot_pairs_indices)
-        print('NUM OPTIONS ', len(dot_pairs_indices))
-
-            
-        
-
-
-            #go through the most parallel
-        for index in dot_pairs_indices.flatten():
-            i = index // len(lines)
-            j = index - (i * len(lines))
-
-
-            print((i, j))
-            line_1 = lines[i][0]
-            line_2 = lines[j][0]
-
-            a1 = np.array(line_1[:2])
-            b1 = np.array(line_1[2:])
-
-            a2 = np.array(line_2[:2])
-            b2 = np.array(line_2[2:])
-
-            tube_length  = None
-            if abs(a1[1] - a2[1]) > line_sim_thresh:
-                if 1:
-                    if abs(b1[1] - b2[1]) > line_sim_thresh:
-                        if 1:
-                            if(filter_lines_just_create):
-                                np_filter_lines[0,:] = np.array([[a1[0], a1[1], b1[0], b1[1], a2[0], a2[1], b2[0], b2[1]]])
-                                filter_lines_just_create = False
-                            else:
-                                np_filter_lines = np.append(np_filter_lines, [[a1[0], a1[1], b1[0], b1[1], a2[0], a2[1], b2[0], b2[1]]], axis=0)
-
-
-            
-                            print(a1.shape)
-                            tube_length = min_dist_lines(a1, b1, a2, b2)
-
-                            print("TUBE LENGTH", tube_length)
-                            #print("NP FILTER LINES")
-                            #print(np_filter_lines)
-                            
-        
-            if tube_length:
-                current_tube_length = tube_length
-                #cv2.line(output_img, (line_1[0], line_1[1]), (line_1[2], line_1[3]), (255,0, 0),2)
-                #cv2.line(output_img, (line_1[0], line_1[1]), (line_1[2], line_1[3]), (0,0, 255),2)
-
-                current_tube_length = tube_length
-                v = b2 - a2
-                v_norm = np.linalg.norm(v)
-                if v_norm:
-                    proj_a1_v = np.dot(a1 - a2, v) / (np.linalg.norm(v) ** 2)
-
-                #draw the perpendicular line
-
-                
-                #cv2.line(output_img, (a1[0], a1[1]), (a2[0] + int((proj_a1_v  * v)[0]), a2[1] + int((proj_a1_v * v)[1])), (0, 255, 0), 2)
-
-            
-            #bin the coords to get the most common cord
-
-    line_par_filtered = np_filter_lines
-
-    new_filter = [0,0,0,0,0,0,0,0]
-    if line_par_filtered.shape != (1,8):
-
-
-        for i in range(8):
-            coordinate_col = line_par_filtered[:,i]
-            coordinate_bins = np.argsort(-1 * np.bincount(coordinate_col))
-
-            print("COORD BINS")
-            print(coordinate_bins)
-            if coordinate_bins.any():
-                most_common_coord = coordinate_bins[0]
-                new_filter[i] = most_common_coord
-
-                if i >= 4:
-                    j = 1
-                    while abs(new_filter[i-4] - most_common_coord) < line_sim_thresh and j <= most_common_coord:
-                        most_common_coord = coordinate_bins[j]
-                        j += 1
-                    new_filter[i] = most_common_coord
-                    
-
-
-                line_par_filtered = line_par_filtered[np.where(line_par_filtered[:,i] == most_common_coord)]
-    
-    if new_filter != [0,0,0,0,0,0,0,0]:
-        cv2.line(output_img, (new_filter[0], new_filter[1]), (new_filter[2], new_filter[3]), (255, 0, 0), 2)
-        cv2.line(output_img, (new_filter[4], new_filter[5]), (new_filter[6], new_filter[7]), (0, 255, 0), 2)
-        a1 = np.array([new_filter[0], new_filter[1]])
-        b1 = np.array([new_filter[2], new_filter[3]])
-
-        a2 = np.array([new_filter[4], new_filter[5]])
-        b2 = np.array([new_filter[6], new_filter[7]])
-        
-        v = b2 - a2
-        if np.linalg.norm(v) != 0:
-            proj_a1_v = np.dot(a1 - a2, v) / (np.linalg.norm(v) ** 2)
-            
-            #draw the perpendicular line
-            cv2.line(output_img, (a1[0], a1[1]), (a2[0] + int((proj_a1_v  * v)[0]), a2[1] + int((proj_a1_v * v)[1])), (0, 0, 255), 2)
-            cv2.imshow('output_lines_1', output_img)
-
-
-        return new_filter
-    else:
-        return None
 
 def droplet_detection(circles, output_img):
     assert start != -1
@@ -279,6 +161,9 @@ def droplet_detection(circles, output_img):
     global grad_threshold
     global gradient_value
     global data
+    global pid_has_been_set_up
+    global target_radius
+    global ratio_height_rad
 
     radius_sum = 0
     gradient_sum = 0
@@ -342,6 +227,17 @@ def droplet_detection(circles, output_img):
         data['time_step'].append(time.time() - start)
         data['radius'].append(sum(circles[0][:, 2]) / len(circles[0]))
 
+        if time.time() - start > CALIBRATION_TIME and current_height != 0 and CHANNEL_WIDTH != 0:
+            if not pid_has_been_set_up:
+                ratio_height_rad = CHANNEL_WIDTH / current_height
+                target_radius = actual_radius / ratio_height_rad
+                pid_setup(target_radius)
+                pid_has_been_set_up = True
+
+            if pid_has_been_set_up:
+                fgt_set_pressure(WATER, droplet_regulation(target_radius, fgt_get_pressure(WATER)))
+
+
         #fgt_set_customSensorRegulation(data['radius'][-1], 100, 400, 0)
         # update the paramaters for the circles
         minRadius = int(data['radius'][-1]) - delta
@@ -355,7 +251,7 @@ def camera_configuration():
   global info
   global camera
   global converter
-  
+
   info = get_camera_info()
 
   if info is not None:
@@ -369,7 +265,7 @@ def camera_configuration():
   converter.OutputPixelFormat = pylon.PixelType_BGR8packed
   converter.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
 
-  
+
 # VERY IMPORTANT STEP! To use Basler PyPylon OpenCV viewer you have to call .Open() method on you camera
 camera_configuration()
 
@@ -378,9 +274,9 @@ if camera is not None:
   tube_edges = None
   boxes = []
 
+
   start = time.time()
-  pressure_val = 200
-  PRESSURE_MIN, PRESSURE_MAX = fgt_get_pressureRange(1)
+  PRESSURE_MIN, PRESSURE_MAX = 50, 500
   while camera.IsGrabbing():
     #fgt_init()
     grabResult = camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
@@ -405,34 +301,31 @@ if camera is not None:
           abs_grad_y = cv2.convertScaleAbs(grad_y)
           grad = cv2.addWeighted(abs_grad_x, 0.5, abs_grad_y, 0.5, 0)
 
-          ret, threshed_img = cv2.threshold(gray_img, 230, 255, cv2.THRESH_BINARY)
+          ret, threshed_img = cv2.threshold(gray_img, 245, 255, cv2.THRESH_BINARY)
           contours = cv2.findContours(threshed_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
 
-  
-          #change to minAreaRect later
+
+        #change to minAreaRect later
+
+
           for c in contours:
             (x, y, w, h) = cv2.boundingRect(c)
             boxes.append([x,y, x+w,y+h])
 
-          
-          left, top = np.min(np.asarray(boxes), axis=0)[:2]
-          right, bottom = np.max(np.asarray(boxes), axis=0)[2:]
 
-          cv2.rectangle(output_img, (left,top), (right,bottom), (255, 0, 0), 2)
+          if len(boxes) > 0 and not pid_has_been_set_up:
+            left, top = np.min(np.asarray(boxes), axis=0)[:2]
+            right, bottom = np.max(np.asarray(boxes), axis=0)[2:]
+            cv2.rectangle(output_img, (left,top), (right,bottom), (255, 0, 0), 2)
+            current_height = abs(bottom - top)
 
-          #calibrate these if needed to get the lines faster through testing
-          #edges = cv2.Canny(gray_img, 50, 300, 4)
-          #lines = cv2.HoughLinesP(edges, rho=1, theta = np.pi/180, threshold =50, minLineLength = WIDTH / 2, maxLineGap = 20)
-
-          #display the tube edges (not accurate immediately, will calibirate and achieve the tube lines)
-          #tube_edges = get_tube_edges(lines, output_img)
 
         gray_img = cv2.cvtColor(output_img, cv2.COLOR_BGR2GRAY)
         circles = cv2.HoughCircles(image=gray_img, method=cv2.HOUGH_GRADIENT, dp=dp, minDist=minDist,
                                     param1=gradient_value, minRadius=minRadius, maxRadius=maxRadius)
 
         droplet_detection(circles, output_img)
-        #fgt_set_pressure(1, droplet_regulation(target_radius, fgt_get_pressure(1)))
+
 
 
 
