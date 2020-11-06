@@ -26,7 +26,7 @@ WIDTH = 672
 HEIGHT = 512
 
 CAMERA_RESOLUTION = 0.30
-CALIBRATION_TIME = 5
+CALIBRATION_TIME = 7
 
 MAX_POSSIBlE_RADIUS = 500
 MIN_POSSIBLE_RADIUS = 0
@@ -45,7 +45,7 @@ gradients = []
 gradient_value = 140
 grad_threshold = 80
 delta = 15
-k_min_dist = 50
+k_min_dist = 25
 line_sim_thresh = 100
 start = -1
 minDist = 10
@@ -57,18 +57,19 @@ tube_width = MAX_POSSIBlE_RADIUS
 PRESSURE_MIN = None
 PRESSURE_MAX = None
 KP = 0.5
-KI = 0.5
-KD = 0
+KI = 0.7
+KD = 0.4
 pid = None
 k_rad_press = 0.5
 all_circle_points = []
-ratio_height_rad = None
+ratio_height_rad = 1
 current_height = 0
+target_ratio = 0.3
 CHANNEL_WIDTH = 200
 np_filter_lines = np.zeros((1, 8), dtype=int)
 filter_lines_just_create = True
 pid_has_been_set_up = False
-target_ratio = 0.5
+
 delta_pressure_thresh = 100
 #collect data
 data = {}
@@ -80,13 +81,23 @@ errors = []
 #actual_radius is the actual target radius in microns
 actual_radius = 50
 
-target_radius = 50
+target_radius_lst =  [20, 25, 30]
+radius_index = 0
+last_time = 0
+target_radius = target_radius_lst[radius_index]
 
+filename = 'droplet_regulation_video.mp4'
+# output testing
+xfourcc = cv2.VideoWriter_fourcc(*'MP4V')   
+out = cv2.VideoWriter(filename, xfourcc, 40, (WIDTH,HEIGHT))
 
+#set up the PID
 def pid_setup(tgt_radius):
     global pid
     pid = PID(KP, KI, KD, setpoint = tgt_radius)
+    pid.sample_time = 0.1
 
+#set up the pressure configuration
 def pressure_configuation():
   fgt_init()
 
@@ -95,10 +106,10 @@ def pressure_configuation():
       print('Pressure channel info at index: {}'.format(i))
       print(pressureInfo)
 
-
+#perform the droplet_regulation
 def droplet_regulation(tgt_radius, current_pressure):
     global target_ratio
-    
+
     assert target_ratio != 0
 
     radius_error = tgt_radius - data['radius'][-1]
@@ -115,16 +126,17 @@ def droplet_regulation(tgt_radius, current_pressure):
             target_ratio += 0.01
             new_pressure = pid_result * target_ratio
 
-    oil_pressure_min_limit = fgt_get_pressure(OIL) / 2.5
-    oil_pressure_max_limit = 2 * fgt_get_pressure(OIL)
+    #oil_pressure_min_limit = fgt_get_pressure(OIL) / 8
+    #oil_pressure_max_limit = 8 * fgt_get_pressure(OIL)
 
-    return min(min(max(max(new_pressure, oil_pressure_min_limit), PRESSURE_MIN), oil_pressure_max_limit), PRESSURE_MAX)
+    return min(max(new_pressure,  PRESSURE_MIN), PRESSURE_MAX)
 
 
+#output data
 def log(data):
-
     print(data)
-    data['radius'] = [ratio_height_rad * r for r in data['radius']]
+    #convert from radii in pixels to actual
+    data['radius'] = [r for r in data['radius']]
     df = pd.DataFrame(data)
     df = df.sort_values(by='time_step', ascending=True)
     df.plot(kind='line', x='time_step', y='radius')
@@ -149,8 +161,7 @@ def get_camera_info():
       print('Camera with {} serial number not found'.format(serial_number))
       return None
 
-
-
+#CHT
 def droplet_detection(circles, output_img):
     assert start != -1
 
@@ -164,6 +175,9 @@ def droplet_detection(circles, output_img):
     global pid_has_been_set_up
     global target_radius
     global ratio_height_rad
+    global pid
+    global radius_index
+    global last_time
 
     radius_sum = 0
     gradient_sum = 0
@@ -227,15 +241,24 @@ def droplet_detection(circles, output_img):
         data['time_step'].append(time.time() - start)
         data['radius'].append(sum(circles[0][:, 2]) / len(circles[0]))
 
-        if time.time() - start > CALIBRATION_TIME and current_height != 0 and CHANNEL_WIDTH != 0:
+        if time.time() - start > CALIBRATION_TIME and CHANNEL_WIDTH != 0:
             if not pid_has_been_set_up:
-                ratio_height_rad = CHANNEL_WIDTH / current_height
-                target_radius = actual_radius / ratio_height_rad
+                #ratio_height_rad = CHANNEL_WIDTH / current_height
+                #target_radius = actual_radius / ratio_height_rad
                 pid_setup(target_radius)
                 pid_has_been_set_up = True
 
             if pid_has_been_set_up:
+
+                if len(data['radius']):
+                    error = abs(target_radius_lst[radius_index] - data['radius'][-1])
+                    if error < 2 and time.time() - last_time > 10 and radius_index < len(target_radius_lst) - 1:
+                        last_time = time.time()
+                        radius_index += 1
+                        pid.setpoint = target_radius_lst[radius_index]
+
                 fgt_set_pressure(WATER, droplet_regulation(target_radius, fgt_get_pressure(WATER)))
+                a = 1
 
 
         #fgt_set_customSensorRegulation(data['radius'][-1], 100, 400, 0)
@@ -244,9 +267,10 @@ def droplet_detection(circles, output_img):
         maxRadius = int(data['radius'][-1]) + delta
         minDist = k_min_dist / ((int(data['radius'][-1])) ** 2)
     cv2.imshow('output_img', output_img)
+    out.write(output_img)
 
 
-
+#set up the camera
 def camera_configuration():
   global info
   global camera
@@ -266,6 +290,7 @@ def camera_configuration():
   converter.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
 
 
+#MAIN CODE
 # VERY IMPORTANT STEP! To use Basler PyPylon OpenCV viewer you have to call .Open() method on you camera
 camera_configuration()
 
@@ -276,7 +301,8 @@ if camera is not None:
 
 
   start = time.time()
-  PRESSURE_MIN, PRESSURE_MAX = 50, 500
+  last_time = start
+  PRESSURE_MIN, PRESSURE_MAX = 100,2000
   while camera.IsGrabbing():
     #fgt_init()
     grabResult = camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
@@ -301,13 +327,11 @@ if camera is not None:
           abs_grad_y = cv2.convertScaleAbs(grad_y)
           grad = cv2.addWeighted(abs_grad_x, 0.5, abs_grad_y, 0.5, 0)
 
-          ret, threshed_img = cv2.threshold(gray_img, 245, 255, cv2.THRESH_BINARY)
+        '''
+          ret, threshed_img =  cv2.threshold(gray_img,255,255,cv2.THRESH_TOZERO_INV)
           contours = cv2.findContours(threshed_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
 
-
         #change to minAreaRect later
-
-
           for c in contours:
             (x, y, w, h) = cv2.boundingRect(c)
             boxes.append([x,y, x+w,y+h])
@@ -318,7 +342,7 @@ if camera is not None:
             right, bottom = np.max(np.asarray(boxes), axis=0)[2:]
             cv2.rectangle(output_img, (left,top), (right,bottom), (255, 0, 0), 2)
             current_height = abs(bottom - top)
-
+        '''
 
         gray_img = cv2.cvtColor(output_img, cv2.COLOR_BGR2GRAY)
         circles = cv2.HoughCircles(image=gray_img, method=cv2.HOUGH_GRADIENT, dp=dp, minDist=minDist,
@@ -326,17 +350,15 @@ if camera is not None:
 
         droplet_detection(circles, output_img)
 
-
-
-
         if cv2.waitKey(1) & 0xFF == ord('q'):
             grabResult.Release()
             camera.StopGrabbing()
-            #out.release()
+            out.release()
             cv2.destroyAllWindows()
             break
 
         grabResult.Release()
+        #out.release()
 
   #fgt_set_pressure(0, 0)
   camera.Close()
