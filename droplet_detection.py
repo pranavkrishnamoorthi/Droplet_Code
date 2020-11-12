@@ -10,10 +10,17 @@ import json
 
 from pypylon_opencv_viewer import BaslerOpenCVViewer
 from Fluigent.SDK import fgt_init, fgt_close
-from Fluigent.SDK import fgt_get_sensorRange, fgt_get_sensorValue, fgt_get_pressure, fgt_get_pressureRange
+from Fluigent.SDK import fgt_get_sensorRange, fgt_get_sensorValue, fgt_get_pressure, fgt_get_pressureRange, fgt_get_pressureChannelsInfo
 from Fluigent.SDK import fgt_set_customSensorRegulation
 from Fluigent.SDK import fgt_set_pressure
 from simple_pid import PID
+from datetime import datetime
+
+now = datetime.now()
+
+
+# dd/mm/YY H:M:S
+dt_string = now.strftime("%d_%m_%Y_%H_%M_%S")
 
 #camera stuff
 serial_number = "23280459"
@@ -26,7 +33,7 @@ WIDTH = 672
 HEIGHT = 512
 
 CAMERA_RESOLUTION = 0.30
-CALIBRATION_TIME = 7
+CALIBRATION_TIME = 0
 
 MAX_POSSIBlE_RADIUS = 500
 MIN_POSSIBLE_RADIUS = 0
@@ -56,9 +63,11 @@ maxRadius = 60
 tube_width = MAX_POSSIBlE_RADIUS
 PRESSURE_MIN = None
 PRESSURE_MAX = None
-KP = 0.5
-KI = 0.7
-KD = 0.4
+KP = 4
+KI = 3
+KD = 1
+bias = 0
+sse_bias = 0
 pid = None
 k_rad_press = 0.5
 all_circle_points = []
@@ -66,83 +75,116 @@ ratio_height_rad = 1
 current_height = 0
 target_ratio = 0.3
 CHANNEL_WIDTH = 200
+height_10x = 393
 np_filter_lines = np.zeros((1, 8), dtype=int)
 filter_lines_just_create = True
 pid_has_been_set_up = False
 
-delta_pressure_thresh = 100
+pid_off = False
+delta_pressure_thresh = 200
 #collect data
 data = {}
 data['radius'] = []
 data['time_step'] = []
+data['water_pressure'] = []
+data['oil_pressure'] = []
+data['diamater'] = []
+
 tube_widths = []
 errors = []
 
 #actual_radius is the actual target radius in microns
-actual_radius = 50
 
-target_radius_lst =  [20, 25, 30]
+actual_diamater_lst =  [20 + 10 * i for i in range(3)]
+actual_radius_lst =  [d / 2 for d in actual_diamater_lst]
 radius_index = 0
-last_time = 0
-target_radius = target_radius_lst[radius_index]
+last_time = -1
+actual_radius = actual_radius_lst[radius_index]
+hold_time = 0
 
-filename = 'droplet_regulation_video.mp4'
+upper_path = 'droplet_regulation_data/'
+video_filename = upper_path + 'video' + dt_string + '.mp4'
+plot_filename = upper_path + 'plot' + dt_string + '.png'
+data_filename = upper_path +'data' + dt_string + '.csv'
+
 # output testing
-xfourcc = cv2.VideoWriter_fourcc(*'MP4V')   
-out = cv2.VideoWriter(filename, xfourcc, 40, (WIDTH,HEIGHT))
+xfourcc = cv2.VideoWriter_fourcc(*'MP4V')
+out = cv2.VideoWriter(video_filename, xfourcc, 40, (WIDTH,HEIGHT))
+
+new_pressure = None
 
 #set up the PID
 def pid_setup(tgt_radius):
     global pid
-    pid = PID(KP, KI, KD, setpoint = tgt_radius)
+    pid = PID(KP, KI, KD, setpoint = tgt_radius + sse_bias)
     pid.sample_time = 0.1
 
 #set up the pressure configuration
 def pressure_configuation():
-  fgt_init()
+  global new_pressure
+
+  #fgt_init()
+  """
 
   pressureInfoArray = fgt_get_pressureChannelsInfo()
   for i, pressureInfo in enumerate(pressureInfoArray):
       print('Pressure channel info at index: {}'.format(i))
       print(pressureInfo)
+  """
+
+  new_pressure = fgt_get_pressure(WATER)
+
 
 #perform the droplet_regulation
 def droplet_regulation(tgt_radius, current_pressure):
     global target_ratio
+    global new_pressure
 
     assert target_ratio != 0
 
+    
     radius_error = tgt_radius - data['radius'][-1]
     pid_result = pid(data['radius'][-1])
-    new_pressure = pid_result * target_ratio
+    new_n_pressure = bias + pid_result * target_ratio
 
-    if new_pressure - current_pressure > delta_pressure_thresh:
-        while new_pressure - current_pressure > delta_pressure_thresh:
-            target_ratio -= 0.01
-            new_pressure = pid_result * target_ratio
+    if new_n_pressure - current_pressure > delta_pressure_thresh:
+        while new_n_pressure - current_pressure > delta_pressure_thresh / 2:
+            target_ratio -= 0.1
+            new_n_pressure = pid_result * target_ratio
 
-    elif current_pressure - new_pressure > delta_pressure_thresh:
-        while current_pressure - new_pressure > delta_pressure_thresh:
-            target_ratio += 0.01
-            new_pressure = pid_result * target_ratio
+    elif current_pressure - new_n_pressure > delta_pressure_thresh:
+        while current_pressure - new_n_pressure > delta_pressure_thresh / 2:
+            target_ratio += 0.1
+            new_n_pressure = pid_result * target_ratio
 
-    #oil_pressure_min_limit = fgt_get_pressure(OIL) / 8
-    #oil_pressure_max_limit = 8 * fgt_get_pressure(OIL)
 
-    return min(max(new_pressure,  PRESSURE_MIN), PRESSURE_MAX)
+    #oil_pressure_min_limit = fgt_get_pressure(OIL) / 5
+    #oil_pressure_max_limit = 5 * fgt_get_pressure(OIL)
+
+    if not pid_off:
+        new_pressure = min(max(new_n_pressure, PRESSURE_MIN), PRESSURE_MAX)
 
 
 #output data
 def log(data):
     print(data)
     #convert from radii in pixels to actual
-    data['radius'] = [r for r in data['radius']]
+    data['diamater'] = [2 * ratio_height_rad * r for r in data['radius']]
     df = pd.DataFrame(data)
     df = df.sort_values(by='time_step', ascending=True)
-    df.plot(kind='line', x='time_step', y='radius')
+    df.plot(kind='line', x='time_step', y='diamater')
+
+
+    plt.xlabel('time (sec)')
+    plt.ylabel('diameter (μm)')
     plt.ylim(0, 100)
+    
+    
+    df.to_csv(data_filename)
+    plt.savefig(plot_filename)
+
     plt.show()
-    plt.savefig('droplet_results.png')
+
     print(df)
     print(tube_widths)
 
@@ -178,6 +220,9 @@ def droplet_detection(circles, output_img):
     global pid
     global radius_index
     global last_time
+    global new_pressure
+    global actual_radius
+    global pid_off
 
     radius_sum = 0
     gradient_sum = 0
@@ -240,24 +285,40 @@ def droplet_detection(circles, output_img):
 
         data['time_step'].append(time.time() - start)
         data['radius'].append(sum(circles[0][:, 2]) / len(circles[0]))
+        data['water_pressure'].append(fgt_get_pressure(WATER))
+        data['oil_pressure'].append(fgt_get_pressure(OIL))
 
         if time.time() - start > CALIBRATION_TIME and CHANNEL_WIDTH != 0:
             if not pid_has_been_set_up:
-                #ratio_height_rad = CHANNEL_WIDTH / current_height
-                #target_radius = actual_radius / ratio_height_rad
+                print('slkdfjklsjdfl')
+                ratio_height_rad = CHANNEL_WIDTH / height_10x
+                target_radius = actual_radius / ratio_height_rad
                 pid_setup(target_radius)
                 pid_has_been_set_up = True
 
             if pid_has_been_set_up:
 
-                if len(data['radius']):
-                    error = abs(target_radius_lst[radius_index] - data['radius'][-1])
-                    if error < 2 and time.time() - last_time > 10 and radius_index < len(target_radius_lst) - 1:
+                if len(data['radius']) != 0:
+                    error = abs(actual_radius_lst[radius_index] - ratio_height_rad * data['radius'][-1])
+                    if error < 2 and radius_index < len(actual_radius_lst) - 1:
+                        #pid.proportional_on_measurement = True
+                        print("RADIUS CHANGE")
                         last_time = time.time()
                         radius_index += 1
-                        pid.setpoint = target_radius_lst[radius_index]
+                        target_radius = actual_radius_lst[radius_index] / ratio_height_rad
+                        pid.setpoint = target_radius
+                        #pid.auto_mode = False
+                        pid_off = True
+                    
+                    if last_time > 0 and time.time() - last_time > 10:
+                        print('changing output')
+                        #pid.set_auto_mode(True, last_output = data['radius'][-1])
+                        last_time = -1
+                        pid_off = False
+                        
 
-                fgt_set_pressure(WATER, droplet_regulation(target_radius, fgt_get_pressure(WATER)))
+                droplet_regulation(target_radius, fgt_get_pressure(WATER))
+                fgt_set_pressure(WATER, new_pressure)
                 a = 1
 
 
@@ -267,6 +328,7 @@ def droplet_detection(circles, output_img):
         maxRadius = int(data['radius'][-1]) + delta
         minDist = k_min_dist / ((int(data['radius'][-1])) ** 2)
     cv2.imshow('output_img', output_img)
+    #log(data)
     out.write(output_img)
 
 
@@ -281,6 +343,7 @@ def camera_configuration():
   if info is not None:
     camera = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateDevice(info))
     camera.Open()
+
 
   camera.AcquisitionFrameRate.SetValue(40)
   camera.PixelFormat.GetValue()
@@ -301,8 +364,8 @@ if camera is not None:
 
 
   start = time.time()
-  last_time = start
-  PRESSURE_MIN, PRESSURE_MAX = 100,2000
+  PRESSURE_MIN, PRESSURE_MAX = 100 , 250
+  pressure_configuation()
   while camera.IsGrabbing():
     #fgt_init()
     grabResult = camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
