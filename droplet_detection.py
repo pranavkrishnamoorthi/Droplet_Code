@@ -16,6 +16,14 @@ from Fluigent.SDK import fgt_set_pressure
 from simple_pid import PID
 from datetime import datetime
 
+from sklearn.linear_model import Lasso, Ridge
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.pipeline import make_pipeline
+from sklearn.model_selection import GridSearchCV
+from sklearn.pipeline import Pipeline
+
+import pickle
+
 now = datetime.now()
 
 
@@ -66,7 +74,7 @@ PRESSURE_MAX = None
 KP = 4
 KI = 3
 KD = 1
-bias = 0
+bias = 10
 sse_bias = 0
 pid = None
 k_rad_press = 0.5
@@ -92,6 +100,11 @@ data['diamater'] = []
 
 tube_widths = []
 errors = []
+
+#trained polynomial model
+model = pickle.load(open("C:/Users/RosemaryLocalAdmin/Documents/Droplet_Testing/Droplet_Code/simple_poly_regression.pickle", 'rb'))
+
+pressures_test = [90 + i*0.1 for i in range(500)]
 
 #actual_radius is the actual target radius in microns
 
@@ -125,7 +138,6 @@ def pressure_configuation():
 
   #fgt_init()
   """
-
   pressureInfoArray = fgt_get_pressureChannelsInfo()
   for i, pressureInfo in enumerate(pressureInfoArray):
       print('Pressure channel info at index: {}'.format(i))
@@ -145,17 +157,21 @@ def droplet_regulation(tgt_radius, current_pressure):
     
     radius_error = tgt_radius - data['radius'][-1]
     pid_result = pid(data['radius'][-1])
-    new_n_pressure = bias + pid_result * target_ratio
+    if radius_error > 2:
+        new_n_pressure = float(model.predict(np.array([tgt_radius]).reshape(-1, 1))[0]) * target_ratio + bias
+    else: 
+        new_n_pressure = bias + pid_result * target_ratio
+        #new_n_pressure = float(model.predict(np.array([pid_result]).reshape(-1, 1))[0]) * target_ratio
 
-    if new_n_pressure - current_pressure > delta_pressure_thresh:
-        while new_n_pressure - current_pressure > delta_pressure_thresh / 2:
-            target_ratio -= 0.1
-            new_n_pressure = pid_result * target_ratio
+        if new_n_pressure - current_pressure > delta_pressure_thresh:
+            while new_n_pressure - current_pressure > delta_pressure_thresh / 2:
+                target_ratio -= 0.1
+                new_n_pressure = pid_result * target_ratio
 
-    elif current_pressure - new_n_pressure > delta_pressure_thresh:
-        while current_pressure - new_n_pressure > delta_pressure_thresh / 2:
-            target_ratio += 0.1
-            new_n_pressure = pid_result * target_ratio
+        elif current_pressure - new_n_pressure > delta_pressure_thresh:
+            while current_pressure - new_n_pressure > delta_pressure_thresh / 2:
+                target_ratio += 0.1
+                new_n_pressure = pid_result * target_ratio
 
 
     #oil_pressure_min_limit = fgt_get_pressure(OIL) / 5
@@ -299,6 +315,8 @@ def droplet_detection(circles, output_img):
             if pid_has_been_set_up:
 
                 if len(data['radius']) != 0:
+
+                    print(data['radius'][-1])
                     error = abs(actual_radius_lst[radius_index] - ratio_height_rad * data['radius'][-1])
                     if error < 2 and radius_index < len(actual_radius_lst) - 1:
                         #pid.proportional_on_measurement = True
@@ -307,17 +325,17 @@ def droplet_detection(circles, output_img):
                         radius_index += 1
                         target_radius = actual_radius_lst[radius_index] / ratio_height_rad
                         pid.setpoint = target_radius
-                        #pid.auto_mode = False
                         pid_off = True
                     
-                    if last_time > 0 and time.time() - last_time > 10:
+                    if last_time > 0 and time.time() - last_time > 5:
                         print('changing output')
-                        #pid.set_auto_mode(True, last_output = data['radius'][-1])
+                        pid.set_auto_mode(True, last_output = data['radius'][-1])
                         last_time = -1
                         pid_off = False
                         
 
                 droplet_regulation(target_radius, fgt_get_pressure(WATER))
+                # new_pressure 
                 fgt_set_pressure(WATER, new_pressure)
                 a = 1
 
@@ -330,6 +348,8 @@ def droplet_detection(circles, output_img):
     cv2.imshow('output_img', output_img)
     #log(data)
     out.write(output_img)
+
+    
 
 
 #set up the camera
@@ -364,10 +384,11 @@ if camera is not None:
 
 
   start = time.time()
-  PRESSURE_MIN, PRESSURE_MAX = 100 , 250
+  PRESSURE_MIN, PRESSURE_MAX = 100, 200
   pressure_configuation()
   while camera.IsGrabbing():
     #fgt_init()
+
     grabResult = camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
 
     if grabResult.GrabSucceeded():
@@ -379,9 +400,8 @@ if camera is not None:
         # image recognition calibration (attempt to minimize the time)
         if time.time() - start < CALIBRATION_TIME:
           den_img = cv2.fastNlMeansDenoisingColored(output_img, None, 10, 10, 7, 21)
-          blur_img = cv2.GaussianBlur(den_img, (3, 3), 0)
           gray_img = cv2.cvtColor(den_img, cv2.COLOR_BGR2GRAY)
-          cv2.imshow("gray", gray_img)
+          #cv2.imshow("gray", gray_img)
 
           # Calculate the gradient mag vector at all to determine the change in intensities for all values
           grad_x = cv2.Sobel(gray_img, ddepth, 1, 0, ksize=3, scale=scale, delta=delta, borderType=cv2.BORDER_DEFAULT)
@@ -393,13 +413,10 @@ if camera is not None:
         '''
           ret, threshed_img =  cv2.threshold(gray_img,255,255,cv2.THRESH_TOZERO_INV)
           contours = cv2.findContours(threshed_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
-
         #change to minAreaRect later
           for c in contours:
             (x, y, w, h) = cv2.boundingRect(c)
             boxes.append([x,y, x+w,y+h])
-
-
           if len(boxes) > 0 and not pid_has_been_set_up:
             left, top = np.min(np.asarray(boxes), axis=0)[:2]
             right, bottom = np.max(np.asarray(boxes), axis=0)[2:]
