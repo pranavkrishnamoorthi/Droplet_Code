@@ -1,6 +1,6 @@
 import sys
 import time
-
+import signal
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
@@ -89,6 +89,7 @@ data['time_step'] = []
 data['water_pressure'] = []
 data['oil_pressure'] = []
 data['diamater'] = []
+data['flow_rate'] = []
 
 tube_widths = []
 errors = []
@@ -118,6 +119,7 @@ first_run = True
 current_radius = 0
 
 current_oil_pressure = None
+pressure_step = None
 # set up the PID
 
 
@@ -146,41 +148,66 @@ def pressure_configuation():
 
 # Iterates through pressures in increments of 5 and collects 100 data points
 def pressure_test(current_pressure):
+    global first_run
+    global iter_num
+    global new_pressure
+    global pressure_step
+    global data
     if first_run == True:
-        new_pressure = 100
+        new_pressure = current_pressure  # change to current val
         iter_num = 0
-        fgt_set_pressure(OIL, 300)
-        current_oil_pressure = 300
+        pressure_step = current_pressure
+        # fgt_set_pressure(OIL, 300) #change to current val
+        #current_oil_pressure = 300
         # Need to decide the proper oil pressure
+        # data['time_step'].append(time.time() - start)
+        # data['radius'].append(current_radius)
+        # data['water_pressure'].append(fgt_get_pressure(WATER))
+        # data['oil_pressure'].append(fgt_get_pressure(OIL))
         first_run = False
-    elif iter_num < 100 or current_oil_pressure >= 400:
-        sleep(1)
-        data['time_step'].append(time.time() - start)
-        data['radius'].append(current_radius)
-        data['water_pressure'].append(fgt_get_pressure(WATER))
-        data['oil_pressure'].append(fgt_get_pressure(OIL))
-        new_pressure = current_pressure
+    # elif pressure_step>150:
+    #     log(data)
+    #     out.write(output_img)
+    elif iter_num < 1500 or pressure_step > 135:
+        # time.sleep(1)
+        # data['time_step'].append(time.time() - start)
+        # data['radius'].append(current_radius)
+        # data['water_pressure'].append(fgt_get_pressure(WATER))
+        # data['oil_pressure'].append(fgt_get_pressure(OIL))
+        new_pressure = pressure_step
         iter_num += 1
-    elif current_pressure < 150:
-        sleep(5)
+    elif pressure_step < 135 and abs(current_pressure-pressure_step) <= 0.5:
+        # time.sleep(5)
         iter_num = 0
-        new_pressure = current_pressure+5
-    elif current_pressure >= 150:
-        sleep(5)
-        iter_num = 0
-        new_pressure = 100
-        fgt_set_pressure(OIL, 300)
-        current_oil_pressure = current_oil_pressure + 5
+        pressure_step = pressure_step+5
+        new_pressure = pressure_step
+        print("Setting Pressure: " + str(new_pressure))
+        # data['time_step'].append(time.time() - start)
+        # data['radius'].append(current_radius)
+        # data['water_pressure'].append(fgt_get_pressure(WATER))
+        # data['oil_pressure'].append(fgt_get_pressure(OIL))
+    # elif current_pressure >= 150:
+    #     sleep(5)
+    #     iter_num = 0
+    #     new_pressure = 100
+    #     fgt_set_pressure(OIL, 300)
+    #     current_oil_pressure = current_oil_pressure + 5
 # output data
+    new_pressure = min(max(new_pressure, PRESSURE_MIN), PRESSURE_MAX)
+    if (iter_num % 50 == 0):
+        print("\tCurrent Pressure: "+str(new_pressure))
+        print("\tIter: "+str(iter_num))
+    fgt_set_pressure(WATER, new_pressure)
 
 
 def log(data):
-    print(data)
+    # print(data[max(50,len(data)-50):])
     # convert from radii in pixels to actual
     data['diamater'] = [2 * ratio_height_rad * r for r in data['radius']]
     df = pd.DataFrame(data)
     df = df.sort_values(by='time_step', ascending=True)
     df.plot(kind='line', x='time_step', y='diamater')
+    df.plot(kind='line', x='time_step', y='flow_rate')
 
     plt.xlabel('time (sec)')
     plt.ylabel('diameter (μm)')
@@ -294,10 +321,10 @@ def droplet_detection(circles, output_img):
             #print("Gradients ", gradients)
             gradient_value = np.sum(gradients) / len(gradients)
 
-        # data['time_step'].append(time.time() - start)
-        # data['radius'].append(sum(circles[0][:, 2]) / len(circles[0]))
-        # data['water_pressure'].append(fgt_get_pressure(WATER))
-        # data['oil_pressure'].append(fgt_get_pressure(OIL))
+        data['time_step'].append(time.time() - start)
+        data['radius'].append(sum(circles[0][:, 2]) / len(circles[0]))
+        data['water_pressure'].append(fgt_get_pressure(WATER))
+        data['oil_pressure'].append(fgt_get_pressure(OIL))
         current_radius = sum(circles[0][:, 2]) / len(circles[0])
 
         if time.time() - start > CALIBRATION_TIME and CHANNEL_WIDTH != 0:
@@ -331,14 +358,15 @@ def droplet_detection(circles, output_img):
                         pid_off = False
 
                 pressure_test(fgt_get_pressure(WATER))
-                fgt_set_pressure(WATER, new_pressure)
+                # fgt_set_pressure(WATER, new_pressure) #incorporate min max to prevent crashing
                 a = 1
 
         #fgt_set_customSensorRegulation(data['radius'][-1], 100, 400, 0)
         # update the paramaters for the circles
-        minRadius = int(data['radius'][-1]) - delta
-        maxRadius = int(data['radius'][-1]) + delta
-        minDist = k_min_dist / ((int(data['radius'][-1])) ** 2)
+        if (len(data['radius']) > 0 and int(data['radius'][-1]) != 0):
+            minRadius = int(data['radius'][-1]) - delta
+            maxRadius = int(data['radius'][-1]) + delta
+            minDist = k_min_dist / ((int(data['radius'][-1])) ** 2)
     cv2.imshow('output_img', output_img)
     # log(data)
     out.write(output_img)
@@ -369,13 +397,22 @@ def camera_configuration():
 # VERY IMPORTANT STEP! To use Basler PyPylon OpenCV viewer you have to call .Open() method on you camera
 camera_configuration()
 
+
+def sigint_handler(signal, frame):
+    print('Interrupted')
+    log(data)
+    out.write(output_img)
+    sys.exit(0)
+
+
+signal.signal(signal.SIGINT, sigint_handler)
 if camera is not None:
     current_tube_length = 0
     tube_edges = None
     boxes = []
 
     start = time.time()
-    PRESSURE_MIN, PRESSURE_MAX = 100, 250
+    PRESSURE_MIN, PRESSURE_MAX = 53, 150
     pressure_configuation()
     while camera.IsGrabbing():
         # fgt_init()
@@ -423,10 +460,14 @@ if camera is not None:
         '''
 
             gray_img = cv2.cvtColor(output_img, cv2.COLOR_BGR2GRAY)
+            t1 = time.time()
             circles = cv2.HoughCircles(image=gray_img, method=cv2.HOUGH_GRADIENT, dp=dp, minDist=minDist,
                                        param1=gradient_value, minRadius=minRadius, maxRadius=maxRadius)
+            t2 = time.time()
 
-            droplet_detection(circles, output_img)
+            if circles is not None:
+                data['flow_rate'].append(len(circles[0]) / (t2 - t1))
+                droplet_detection(circles, output_img)
 
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 grabResult.Release()
