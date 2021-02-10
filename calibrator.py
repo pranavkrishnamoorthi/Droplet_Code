@@ -8,6 +8,7 @@ import pandas as pd
 from pypylon import pylon
 import json
 
+from sklearn.linear_model import Ridge
 from pypylon_opencv_viewer import BaslerOpenCVViewer
 from Fluigent.SDK import fgt_init, fgt_close
 from Fluigent.SDK import fgt_get_sensorRange, fgt_get_sensorValue, fgt_get_pressure, fgt_get_pressureRange, fgt_get_pressureChannelsInfo
@@ -185,7 +186,7 @@ def calibration(current_pressure, base_pressure, upper_pressure):
         y = data_rad.reshape(-1, 1)
         X = np.hstack((data_ratio.reshape(-1, 1),
                        np.ones((len(data_ratio), 1))))
-        clf = Ridge(alpha=1.0, fit_intercept=False)clf.fit(X, y)
+        clf = Ridge(alpha=1.0, fit_intercept=False)
         clf.fit(X, y)
         slope = clf.coef_[0][0]
         intercept = clf.coef_[0][1]
@@ -203,7 +204,11 @@ def calibration(current_pressure, base_pressure, upper_pressure):
         calibrate_pressure_step = calibrate_pressure_step+5
         calibrate_new_pressure = calibrate_pressure_step
         print("Setting Pressure: " + str(calibrate_new_pressure))
+
+    # prevent bounds exceeding
     calibrate_new_pressure = min(max(new_pressure, PRESSURE_MIN), PRESSURE_MAX)
+
+    # printing stuff no functionality here
     if (calibrate_iter_num % 50 == 0):
         print("\tCurrent Pressure: "+str(calibrate_new_pressure))
         print("\tIter: "+str(calibrate_iter_num))
