@@ -128,7 +128,7 @@ upper_path = 'droplet_regulation_data/'
 video_filename = upper_path + 'video' + dt_string + '.mp4'
 plot_filename = upper_path + 'plot' + dt_string + '.png'
 data_filename = upper_path + 'data' + dt_string + '.csv'
-
+calibration_filename = upper_path + 'calibration_data' + dt_string + '.csv'
 # output testing
 xfourcc = cv2.VideoWriter_fourcc(*'MP4V')
 out = cv2.VideoWriter(video_filename, xfourcc, 40, (WIDTH, HEIGHT))
@@ -139,6 +139,7 @@ new_pressure = None
 iter_num = 0
 first_run = True
 previous_radius = None
+previous_variance = None
 
 current_oil_pressure = None
 pressure_step = None
@@ -149,12 +150,16 @@ first = True
 calibrated = False
 calibrate_iter_num = 0
 calibrate_new_pressure = 0
-calibrate_pressure_step = 80
+calibrate_pressure_step = PRESSURE_MIN
 slope = 0
 intercept = 0
 
 
+stop_time = time.time()
+
 # set up the PID
+
+
 def pid_setup(tgt_radius):
     global pid
     pid = PID(KP, KI, KD, setpoint=tgt_radius + sse_bias)
@@ -191,23 +196,28 @@ def gradual_water_pressure(current_pressure, target_pressure):
 
 
 def calibration(current_pressure, base_pressure, upper_pressure):
-    print('1')
+    # print('Called Calib')
     global first, calibrate_iter_num, calibrate_new_pressure, calibrate_pressure_step, calibrated, slope, intercept, data, calibration_data
     # copy data into calibration set
-    calibration_data['radius'].append(data['radius'][-1])
-    calibration_data['time_step'].append(data['time_step'][-1])
-    calibration_data['water_pressure'].append(data['water_pressure'][-1])
-    calibration_data['oil_pressure'].append(data['oil_pressure'][-1])
-    calibration_data['diameter'].append(data['diameter'][-1])
+    if len(data['radius']) > 0:
+        calibration_data['radius'].append(data['radius'][-1])
+        calibration_data['time_step'].append(data['time_step'][-1])
+        calibration_data['water_pressure'].append(data['water_pressure'][-1])
+        calibration_data['oil_pressure'].append(data['oil_pressure'][-1])
+    # calibration_data['diameter'].append(data['diameter'][-1])
     # on first run gradually reset the water pressure to base pressure
     if first and current_pressure != base_pressure:
         print("Starting Calibration")
-        gradual_water_pressure(current_pressure, base_pressure)
+        calibrate_pressure_step = base_pressure
+        #gradual_water_pressure(current_pressure, base_pressure)
+        print("Base Pressure: " + str(base_pressure))
+        fgt_set_pressure(WATER, base_pressure)
         first = False
         return
     # After collecting enough data points appy ridge regression and calculate slope and intercept
     if calibrate_pressure_step >= upper_pressure:
-        data['diameter'] = [2 * ratio_height_rad * r for r in data['radius']]
+        calibration_data['diameter'] = [
+            2 * ratio_height_rad * r for r in calibration_data['radius']]
         df = pd.DataFrame(calibration_data)
         data_rad = np.array(df['radius'])
         data_water = np.array(df['water_pressure'])
@@ -230,7 +240,7 @@ def calibration(current_pressure, base_pressure, upper_pressure):
         calibrate_iter_num += 1
 
     # swtiching to next pressure
-    elif calibrate_pressure_step < 135:
+    elif calibrate_pressure_step < upper_pressure:
         print("Stepping up calibration")
         time.sleep(2)
         calibrate_iter_num = 0
@@ -244,7 +254,7 @@ def calibration(current_pressure, base_pressure, upper_pressure):
 
     # printing stuff no functionality here
     if (calibrate_iter_num % 50 == 0):
-        print("\tCurrent Pressure: "+str(calibrate_new_pressure))
+        print("\tCurrent Calib Pressure: "+str(calibrate_new_pressure))
         print("\tIter: "+str(calibrate_iter_num))
 
     # set pressure
@@ -287,7 +297,7 @@ def pressure_test(current_pressure):
 def droplet_regulation(tgt_radius, current_pressure):
     global target_ratio
     global new_pressure
-
+    global stop_time
     assert target_ratio != 0
 
     radius_error = tgt_radius - data['radius'][-1]
@@ -297,18 +307,20 @@ def droplet_regulation(tgt_radius, current_pressure):
 
     if abs(radius_error) > 5:
         if radius_error > 0 and heuristic_pressure > current_pressure:
-            new_pressure = min(current_pressure + 5, heuristic_pressure)
+            new_pressure = min(current_pressure + 20, heuristic_pressure)
+            stop_time = time.time()
         elif radius_error < 0 and heuristic_pressure < current_pressure:
-            new_pressure = max(current_pressure - 5, heuristic_pressure)
+            new_pressure = max(current_pressure - 20, heuristic_pressure)
+            stop_time = time.time()
         elif radius_error > 0:
             new_pressure = current_pressure + 5
         else:
             new_pressure = current_pressure - 5
     elif abs(radius_error) > 3:
         if radius_error > 0:
-            new_pressure = current_pressure + min(abs(radius_error)*m, 3)
+            new_pressure = current_pressure + min(abs(radius_error)*slope, 3)
         else:
-            new_pressure = current_pressure - min(abs(radius_error)*m, 3)
+            new_pressure = current_pressure - min(abs(radius_error)*slope, 3)
     elif abs(radius_error) > 1:
         if radius_error > 0:
             new_pressure = current_pressure + 1
@@ -321,12 +333,22 @@ def droplet_regulation(tgt_radius, current_pressure):
 
 
 def log(data):
-    print(data)
+    # print(data)
     # convert from radii in pixels to actual
+    global calibration_data
+    print("Logging")
     data['diameter'] = [2 * ratio_height_rad * r for r in data['radius']]
     df = pd.DataFrame(data)
     df = df.sort_values(by='time_step', ascending=True)
     df.plot(kind='line', x='time_step', y='diameter')
+
+    # calibration data
+    calibration_data['diameter'] = [
+        2 * ratio_height_rad * r for r in calibration_data['radius']]
+    cdf = pd.DataFrame(calibration_data)
+    cdf = cdf.sort_values(by='time_step', ascending=True)
+    cdf.plot(kind='line', x='time_step', y='diameter')
+    cdf.to_csv(calibration_filename)
 
     plt.xlabel('time (sec)')
     plt.ylabel('diameter (μm)')
@@ -372,7 +394,8 @@ def droplet_detection(circles, output_img):
     global actual_radius
     global pid_off
     global model_created
-    global previous_radius
+    global previous_radius, previous_variance
+    global stop_time
 
     radius_sum = 0
     gradient_sum = 0
@@ -407,13 +430,15 @@ def droplet_detection(circles, output_img):
             cv2.rectangle(output_img, (x - 2, y - 2),
                           (x + 2, y + 2), (255, 0, 0), -1)
 
-        if not calibrated and (abs(data['radius'][-1]-previous_radius) < 1 or previous_radius=None):
-            print('hi1')
-            calibration(fgt_get_pressure(WATER), 90, 130)
+        if not calibrated and (previous_radius is None or previous_variance < 15):
+            calibration(fgt_get_pressure(WATER), 240, 350)
 
-        if len(data['radius']) > 0:
+        if len(data['radius']) > 4:
             # consider using an average of the previous 10 points?
             previous_radius = data['radius'][-1]
+            previous_variance = np.var(data['radius'][:-5])
+        else:
+            previous_variance = None
         data['time_step'].append(time.time() - start)
         data['radius'].append(sum(circles[0][:, 2]) / len(circles[0]))
         data['water_pressure'].append(fgt_get_pressure(WATER))
@@ -435,7 +460,7 @@ def droplet_detection(circles, output_img):
 
                     print(data['radius'][-1])
                     error = abs(target_radius - data['radius'][-1])
-                    if error < 4 and radius_index < len(actual_radius_lst) - 1:
+                    if error < 2 and radius_index < len(actual_radius_lst) - 1:
                         #pid.proportional_on_measurement = True
                         print("RADIUS CHANGE")
                         last_time = time.time()
@@ -449,11 +474,14 @@ def droplet_detection(circles, output_img):
                         pid.set_auto_mode(True, last_output=data['radius'][-1])
                         last_time = -1
 
-                    if (abs(data['radius'][-1]-previous_radius) < 1 or previous_radius=None):
+                    if time.time() - stop_time > 5:
                         droplet_regulation(
                             target_radius, fgt_get_pressure(WATER))
                         # new_pressure
                         fgt_set_pressure(WATER, new_pressure)
+                    else:
+                        stop_time = 0
+
                     a = 1
 
         #fgt_set_customSensorRegulation(data['radius'][-1], 100, 400, 0)
@@ -491,14 +519,25 @@ def camera_configuration():
 # VERY IMPORTANT STEP! To use Basler PyPylon OpenCV viewer you have to call .Open() method on you camera
 camera_configuration()
 
+
+def sigint_handler(signal, frame):
+    print('Interrupted')
+    log(data)
+    out.write(output_img)
+    sys.exit(0)
+
+
+signal.signal(signal.SIGINT, sigint_handler)
+
 if camera is not None:
     current_tube_length = 0
     tube_edges = None
     boxes = []
 
     start = time.time()
-    PRESSURE_MIN, PRESSURE_MAX = 80, 200
+    PRESSURE_MIN, PRESSURE_MAX = 200, 500
     pressure_configuation()
+
     while camera.IsGrabbing():
         # fgt_init()
 
