@@ -157,6 +157,9 @@ intercept = 0
 
 stop_time = time.time()
 
+# control testing variables
+stable_step = 0
+
 # set up the PID
 
 
@@ -223,9 +226,10 @@ def calibration(current_pressure, base_pressure, upper_pressure):
         data_water = np.array(df['water_pressure'])
         data_oil = np.array(df['oil_pressure'])
         data_ratio = data_water/data_oil
-        y = data_rad.reshape(-1, 1)
-        X = np.hstack((data_ratio.reshape(-1, 1),
-                       np.ones((len(data_ratio), 1))))
+        # FLIPPED DATA X and Y SHOULD BE SWITCHED (FIXED)
+        y = data_ratio.reshape(-1, 1)
+        X = np.hstack((data_rad.reshape(-1, 1),
+                       np.ones((len(data_rad), 1))))
         clf = Ridge(alpha=1.0, fit_intercept=False)
         clf.fit(X, y)
         slope = clf.coef_[0][0]
@@ -303,7 +307,8 @@ def droplet_regulation(tgt_radius, current_pressure):
     radius_error = tgt_radius - data['radius'][-1]
     # pid_result = pid(data['radius'][-1])
     # new_pressure = intercept + pid_result * slope
-    heuristic_pressure = intercept + tgt_radius*slope
+    # Model is trained in terms of water/oil ratio so need to multiply by oil pressure
+    heuristic_pressure = (intercept + tgt_radius*slope)*fgt_get_pressure(OIL)
 
     if abs(radius_error) > 5:
         if radius_error > 0 and heuristic_pressure > current_pressure:
@@ -396,6 +401,7 @@ def droplet_detection(circles, output_img):
     global model_created
     global previous_radius, previous_variance
     global stop_time
+    global stable_step
 
     radius_sum = 0
     gradient_sum = 0
@@ -440,16 +446,20 @@ def droplet_detection(circles, output_img):
         else:
             previous_variance = None
         data['time_step'].append(time.time() - start)
-        data['radius'].append(sum(circles[0][:, 2]) / len(circles[0]))
+        # FIND WAY TO USE RADIUS HEIGHT RATIO HERE (double check)
+        # data['radius'].append(sum(circles[0][:, 2]) / len(circles[0]))
+        data['radius'].append(
+            (sum(circles[0][:, 2]) / len(circles[0]))/ratio_height_rad)
         data['water_pressure'].append(fgt_get_pressure(WATER))
         data['oil_pressure'].append(fgt_get_pressure(OIL))
 
         if calibrated and CHANNEL_WIDTH != 0:
             print('CALIBRATION DONE')
             if not pid_has_been_set_up:
-                print('slkdfjklsjdfl')
+                print('PID Set up')
                 ratio_height_rad = CHANNEL_WIDTH / height_10x
-                target_radius = actual_radius_lst[0] / ratio_height_rad
+                # target_radius = actual_radius_lst[0] / ratio_height_rad
+                target_radius = actual_radius_lst[0]
                 pid_setup(target_radius)
                 pid_has_been_set_up = True
 
@@ -460,25 +470,37 @@ def droplet_detection(circles, output_img):
 
                     print(data['radius'][-1])
                     error = abs(target_radius - data['radius'][-1])
-                    if error < 2 and radius_index < len(actual_radius_lst) - 1:
+                    if error < 1 and radius_index < len(actual_radius_lst) - 1:
+                        if stable_step == 1000:
+                            print("RADIUS CHANGE")
+                            last_time = time.time()
+                            radius_index += 1
+                            # target_radius = actual_radius_lst[radius_index] / \
+                            #     ratio_height_rad
+                            target_radius = actual_radius_lst[radius_index]
+                            stable_step = 0
+                            pid.setpoint = target_radius
+                        else:
+                            stable_step += 1
                         #pid.proportional_on_measurement = True
-                        print("RADIUS CHANGE")
-                        last_time = time.time()
-                        radius_index += 1
-                        target_radius = actual_radius_lst[radius_index] / \
-                            ratio_height_rad
-                        pid.setpoint = target_radius
 
                     if last_time > 0 and time.time() - last_time > 5:
                         print('changing output')
                         pid.set_auto_mode(True, last_output=data['radius'][-1])
                         last_time = -1
 
-                    if time.time() - stop_time > 5:
+                    # if time.time() - stop_time > 5:
+                    #     droplet_regulation(
+                    #         target_radius, fgt_get_pressure(WATER))
+                    #     # new_pressure
+                    #     fgt_set_pressure(WATER, new_pressure)
+
+                    if previous_radius is None or previous_variance < 15:
                         droplet_regulation(
                             target_radius, fgt_get_pressure(WATER))
                         # new_pressure
                         fgt_set_pressure(WATER, new_pressure)
+
                     else:
                         stop_time = 0
 
