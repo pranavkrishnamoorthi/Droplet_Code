@@ -385,7 +385,7 @@ def get_camera_info():
 # CHT
 
 
-def droplet_detection(circles, output_img, gray_img):
+def droplet_detection(circles, output_img):
     assert start != -1
 
     global gradients
@@ -419,38 +419,32 @@ def droplet_detection(circles, output_img, gray_img):
         minSensor, maxSensor = 0, 400
 
         # draw the circles
-        for i in range(len(circles[0])):
-            x, y, r = circles[0][i]
-            x, y, r = int(x), int(y), int(r)
-            outer_edge_sum = 0
-            for the_ten in range(36):
-                theta = the_ten * 10
-                outer_edge = r
-                max_diff = 0
-                x1, y1 = x, y
-                for delt in range(0, 10):
-                    r_new = r + delt
-                    x2 = int(x + r_new * np.cos(theta))
-                    y2 = int(y + r_new * np.sin(theta))
-                    if y2 < 512 and x2 < 512 and x1 < 512 and y1 < 512:
-                        if gray_img[x2][y2] - gray_img[x1][y1] > max_diff:
-                            max_diff = gray_img[x2][y2] - gray_img[x1][y1]
-                            outer_edge = r_new
-                        x1, y1 = x2, y2
-                    else:
-                        break
-                outer_edge_sum += outer_edge
-            circles[0][i][2] = outer_edge_sum / 36
-
+        for (x, y, r) in circles[0]:
+            if time.time() - start < CALIBRATION_TIME:
+                # gradient_avg = 0
+                # for theta in range(360):
+                #     current_grad_thresh = 0
+                #     for margin_r in range(-10, 10):
+                #         edge_x = int(x + (r + 0.5 * margin_r) * np.cos(theta))
+                #         edge_y = int(y + (r + 0.5 * margin_r) * np.sin(theta))
+                #         if edge_x < len(grad) and edge_y < len(grad[edge_x]):
+                #             current_grad_thresh = max(current_grad_thresh, grad[edge_x][edge_y])
+                #     gradient_avg += current_grad_thresh
+                # gradient_avg /= 360
+                # sum_gradient_avg += gradient_avg
+                # grad_count += 1
+                M = 1
             radius_sum += r
+            x, y, r = int(x), int(y), int(r)
             # outer_circle
+
             cv2.circle(output_img, (x, y), r, (0, 255, 0), 4)
             # center dot
             cv2.rectangle(output_img, (x - 2, y - 2),
                           (x + 2, y + 2), (255, 0, 0), -1)
 
         if not calibrated and (previous_radius is None or previous_variance < 15):
-            calibration(fgt_get_pressure(WATER), PRESSURE_MIN, PRESSURE_MAX)
+            calibration(fgt_get_pressure(WATER), 290, 310)
 
         if len(data['radius']) > 4:
             # consider using an average of the previous 10 points?
@@ -466,13 +460,22 @@ def droplet_detection(circles, output_img, gray_img):
         data['water_pressure'].append(fgt_get_pressure(WATER))
         data['oil_pressure'].append(fgt_get_pressure(OIL))
 
+        print(data['radius'][-1])
         if calibrated and CHANNEL_WIDTH != 0:
-            print('CALIBRATION DONE')
+            if previous_radius is None or previous_variance < 15:
+                droplet_regulation(
+                    target_radius, fgt_get_pressure(WATER))
+                fgt_set_pressure(WATER, new_pressure)
+
+            else:
+                print("Staggering, Target radius: ", target_radius)
+                stop_time = 0
+            # print('CALIBRATION DONE')
             if not pid_has_been_set_up:
                 print('PID Set up')
                 ratio_height_rad = CHANNEL_WIDTH / height_10x
                 # target_radius = actual_radius_lst[0] / ratio_height_rad
-                target_radius = actual_radius_lst[0]
+                # target_radius = actual_radius_lst[0]
                 pid_setup(target_radius)
                 pid_has_been_set_up = True
 
@@ -483,19 +486,19 @@ def droplet_detection(circles, output_img, gray_img):
 
                     print(data['radius'][-1])
                     error = abs(target_radius - data['radius'][-1])
-                    if error < 1 and radius_index < len(actual_radius_lst) - 1:
-                        if stable_step == 1000:
-                            print("RADIUS CHANGE")
-                            last_time = time.time()
-                            radius_index += 1
-                            # target_radius = actual_radius_lst[radius_index] / \
-                            #     ratio_height_rad
-                            target_radius = actual_radius_lst[radius_index]
-                            stable_step = 0
-                            pid.setpoint = target_radius
-                        else:
-                            stable_step += 1
-                        #pid.proportional_on_measurement = True
+                    # if error < 1 and radius_index < len(actual_radius_lst) - 1:
+                    #     if stable_step == 1000:
+                    #         print("RADIUS CHANGE")
+                    #         last_time = time.time()
+                    #         radius_index += 1
+                    #         # target_radius = actual_radius_lst[radius_index] / \
+                    #         #     ratio_height_rad
+                    #         target_radius = actual_radius_lst[radius_index]
+                    #         stable_step = 0
+                    #         pid.setpoint = target_radius
+                    #     else:
+                    #         stable_step += 1
+                    #pid.proportional_on_measurement = True
 
                     if last_time > 0 and time.time() - last_time > 5:
                         print('changing output')
@@ -508,14 +511,14 @@ def droplet_detection(circles, output_img, gray_img):
                     #     # new_pressure
                     #     fgt_set_pressure(WATER, new_pressure)
 
-                    if previous_radius is None or previous_variance < 15:
-                        droplet_regulation(
-                            target_radius, fgt_get_pressure(WATER))
-                        # new_pressure
-                        fgt_set_pressure(WATER, new_pressure)
+                    # if previous_radius is None or previous_variance < 15:
+                    #     droplet_regulation(
+                    #         target_radius, fgt_get_pressure(WATER))
+                    #     fgt_set_pressure(WATER, new_pressure)
 
-                    else:
-                        stop_time = 0
+                    # else:
+                    #     print("Staggering, Target radius: ", target_radius)
+                    #     stop_time = 0
 
                     a = 1
 
@@ -574,7 +577,7 @@ def main(run_event, start_event):
         boxes = []
 
         start = time.time()
-        PRESSURE_MIN, PRESSURE_MAX = 630, 780
+        PRESSURE_MIN, PRESSURE_MAX = 290, 311
         pressure_configuation()
 
         while camera.IsGrabbing() and run_event.is_set():
@@ -595,7 +598,7 @@ def main(run_event, start_event):
                                            param1=gradient_value, minRadius=minRadius, maxRadius=maxRadius)
 
                 if start_event.is_set():
-                    droplet_detection(circles, output_img, gray_img)
+                    droplet_detection(circles, output_img)
 
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     grabResult.Release()
