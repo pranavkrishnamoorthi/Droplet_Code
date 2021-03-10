@@ -73,7 +73,7 @@ grad_threshold = 100
 minRadius = 5
 maxRadius = 60
 tube_width = MAX_POSSIBlE_RADIUS
-PRESSURE_MIN, PRESSURE_MAX = 630, 780
+PRESSURE_MIN, PRESSURE_MAX = 250, 300
 KP = 0
 KI = 0
 KD = 0
@@ -137,7 +137,7 @@ pid_filename = upper_path + 'pid' + dt_string + '.csv'
 # output testing
 xfourcc = cv2.VideoWriter_fourcc(*'MP4V')
 out = cv2.VideoWriter(video_filename, xfourcc, 40, (WIDTH, HEIGHT))
-
+output_image = None
 
 iter_num = 0
 first_run = False
@@ -169,8 +169,8 @@ stable_step = 0
 def pid_setup(tgt_radius):
     global pid
     pid = PID(KP, KI, KD, setpoint=tgt_radius)
-    pid.output_limits = (0, 10)
-    pid.sample_time = 0.1
+    # pid.output_limits = (-10, 10)
+    pid.sample_time = 1
 
 # set up the pressure configuration
 
@@ -268,39 +268,48 @@ def pid_test(current_pressure, current_radius):
     global new_Kp
     global Kp_step
     global data, pid, pid_testing
-    if first_run == True:
-        Kp_step = 0  # change to current val
-        pid.Kp = Kp_step
-        iter_num = 0
-        pid_testing['Kp'].append(Kp_step)
-        pid_testing['start_time'].append(data['time_step'][-1])
-        output = pid(current_radius)
-        new_pressure = current_pressure + output
-        if new_pressure < PRESSURE_MIN or new_pressure > PRESSURE_MAX:
-            print("Hitting bounds thresh")
-        new_pressure = min(max(new_pressure, PRESSURE_MIN), PRESSURE_MAX)
-        fgt_set_pressure(WATER, new_pressure)
+    pid.Kp = 0.15
+    # pid.Kd = 0.1
+    new_pressure = current_pressure + pid(current_radius)
+    new_pressure = min(max(new_pressure, PRESSURE_MIN), PRESSURE_MAX)
+    print("PID output: ", pid(current_radius))
+    print("Radius: ", current_radius)
+    print("New Pressure: ", new_pressure)
+    fgt_set_pressure(WATER, new_pressure)
+    # if first_run == True:
+    #     Kp_step = 0  # change to current val
+    #     # pid.Kp = Kp_step
+    #     iter_num = 0
+    #     pid_testing['Kp'].append(Kp_step)
+    #     pid_testing['start_time'].append(data['time_step'][-1])
+    #     print("PID Output: ", pid(current_radius))
+    #     print("Current Pressure: ", current_pressure)
+    #     new_pressure = current_pressure + pid(current_radius)
+    #     if new_pressure < PRESSURE_MIN or new_pressure > PRESSURE_MAX:
+    #         print("Hitting bounds thresh")
+    #     new_pressure = min(max(new_pressure, PRESSURE_MIN), PRESSURE_MAX)
+    #     fgt_set_pressure(WATER, new_pressure)
 
-        first_run = False
-    elif Kp_step > 0.05:
-        print("Done with PID testing")
-        log_pid
-        start_pid.clear()
-    elif iter_num < 1500:
-        iter_num += 1
-        output = pid(current_radius)
-        new_pressure = current_pressure + output
-        if new_pressure < PRESSURE_MIN or new_pressure > PRESSURE_MAX:
-            print("Hitting bounds thresh")
-        new_pressure = min(max(new_pressure, PRESSURE_MIN), PRESSURE_MAX)
-        fgt_set_pressure(WATER, new_pressure)
-    elif Kp_step < 0.05:
-        # time.sleep(5)
-        Kp_step += 0.001
-        pid.Kp = Kp_step
-        pid_testing['Kp'].append(Kp_step)
-        pid_testing['start_time'].append(data['time_step'][-1])
-        iter_num = 0
+    #     first_run = False
+    # elif Kp_step > 0.005:
+    #     print("Done with PID testing")
+    #     log_pid()
+    #     start_pid.clear()
+    # elif iter_num < 1500:
+    #     iter_num += 1
+    #     output = pid(current_radius)
+    #     new_pressure = current_pressure + output
+    #     if new_pressure < PRESSURE_MIN or new_pressure > PRESSURE_MAX:
+    #         print("Hitting bounds thresh")
+    #     new_pressure = min(max(new_pressure, PRESSURE_MIN), PRESSURE_MAX)
+    #     fgt_set_pressure(WATER, new_pressure)
+    # elif Kp_step < 0.05:
+    #     # time.sleep(5)
+    #     Kp_step += 0.001
+    #     pid.Kp = Kp_step
+    #     pid_testing['Kp'].append(Kp_step)
+    #     pid_testing['start_time'].append(data['time_step'][-1])
+    #     iter_num = 0
 
 
 # perform the droplet_regulation
@@ -364,7 +373,7 @@ def log(data):
         2 * ratio_height_rad * r for r in calibration_data['radius']]
     cdf = pd.DataFrame(calibration_data)
     cdf = cdf.sort_values(by='time_step', ascending=True)
-    cdf.plot(kind='line', x='time_step', y='diameter')
+    cdf.plot(kind='scatter', x='time_step', y='diameter')
     cdf.to_csv(calibration_filename)
 
     plt.xlabel('time (sec)')
@@ -429,7 +438,7 @@ def droplet_detection(circles, output_img, gray_img):
             x, y, r = circles[0][i]
             x, y, r = int(x), int(y), int(r)
             outer_edge_sum = 0
-            for the_ten in range(36):
+            for the_ten in range(360):
                 theta = the_ten * 10
                 outer_edge = r
                 max_diff = 0
@@ -446,7 +455,7 @@ def droplet_detection(circles, output_img, gray_img):
                     else:
                         break
                 outer_edge_sum += outer_edge
-            circles[0][i][2] = outer_edge_sum / 36
+            circles[0][i][2] = outer_edge_sum / 360
 
             radius_sum += r
             # outer_circle
@@ -467,14 +476,15 @@ def droplet_detection(circles, output_img, gray_img):
         data['time_step'].append(time.time() - start)
         # FIND WAY TO USE RADIUS HEIGHT RATIO HERE (double check)
         # data['radius'].append(sum(circles[0][:, 2]) / len(circles[0]))
-        data['radius'].append(
-            (sum(circles[0][:, 2]) / len(circles[0]))/ratio_height_rad)
+        data['radius'].append(np.median(circles[0][:, 2] / ratio_height_rad))
+        # (sum(circles[0][:, 2]) / len(circles[0]))/ratio_height_rad)
         data['water_pressure'].append(fgt_get_pressure(WATER))
         data['oil_pressure'].append(fgt_get_pressure(OIL))
 
         if start_pid.is_set():
-            pid_test(fgt_get_pressure(WATER), data['water_presure'][-1])
+            pid_test(fgt_get_pressure(WATER), data['radius'][-1])
 
+        print('\tCurrent Radius: ', data['radius'][-1])
         if calibrated and CHANNEL_WIDTH != 0:
             print('CALIBRATION DONE')
             if not pid_has_been_set_up:
@@ -575,7 +585,7 @@ signal.signal(signal.SIGINT, sigint_handler)
 
 
 def main(run_event, start_event):
-    global camera, start, PRESSURE_MIN, PRESSURE_MAX
+    global camera, start, PRESSURE_MIN, PRESSURE_MAX, output_image
 
     if camera is not None:
         current_tube_length = 0
@@ -619,7 +629,7 @@ def main(run_event, start_event):
         camera.Close()
         # fgt_close()
 
-        log(data)
+        # log(data)
 
 
 window = tk.Tk()
@@ -661,14 +671,18 @@ def stopClick(event):
 
 
 def pidStartClick(event):
-    global start_pid
+    global start_pid, first_run
+    first_run = True
     pid_setup(target_radius)
     start_pid.set()
 
 
 def pidStopClick(event):
-    global start_pid
+    global start_pid, first_run, iter_num
     start_pid.clear()
+    log_pid()
+    first_run = True
+    iter_num = 0
 
 
 window.geometry("500x200")
