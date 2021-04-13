@@ -73,7 +73,7 @@ grad_threshold = 100
 minRadius = 5
 maxRadius = 60
 tube_width = MAX_POSSIBlE_RADIUS
-PRESSURE_MIN, PRESSURE_MAX = 250, 300
+PRESSURE_MIN, PRESSURE_MAX = 100, 130
 KP = 0
 KI = 0
 KD = 0
@@ -113,6 +113,7 @@ calibration_data['diameter'] = []
 
 tube_widths = []
 errors = []
+no_circles_count = 0
 
 # trained polynomial model
 
@@ -268,13 +269,14 @@ def pid_test(current_pressure, current_radius):
     global new_Kp
     global Kp_step
     global data, pid, pid_testing
-    pid.Kp = 0.15
+    pid.Kp = 0.10
     # pid.Kd = 0.1
+    pid.Ki = 0.05
     new_pressure = current_pressure + pid(current_radius)
     new_pressure = min(max(new_pressure, PRESSURE_MIN), PRESSURE_MAX)
-    print("PID output: ", pid(current_radius))
-    print("Radius: ", current_radius)
-    print("New Pressure: ", new_pressure)
+    # print("PID output: ", pid(current_radius))
+    # print("Radius: ", current_radius)
+    # print("New Pressure: ", new_pressure)
     fgt_set_pressure(WATER, new_pressure)
     # if first_run == True:
     #     Kp_step = 0  # change to current val
@@ -403,26 +405,12 @@ def get_camera_info():
 def droplet_detection(circles, output_img, gray_img):
     assert start != -1
 
-    global gradients
-    global minDist
-    global minRadius
-    global maxRadius
-    global grad_threshold
-    global gradient_value
-    global data
-    global pid_has_been_set_up
-    global target_radius
-    global ratio_height_rad
-    global pid
-    global radius_index
-    global last_time
-    global new_pressure
-    global actual_radius
-    global pid_off
-    global model_created
+    global gradients, minDist, minRadius, maxRadius, grad_threshold, gradient_value
+    global data, pid_has_been_set_up, target_radius, ratio_height_rad, pid, radius_index
+    global last_time, new_pressure, actual_radius, pid_off, model_created
     global previous_radius, previous_variance
     global stop_time
-    global stable_step
+    global stable_step, no_circles_count
 
     radius_sum = 0
     gradient_sum = 0
@@ -430,10 +418,20 @@ def droplet_detection(circles, output_img, gray_img):
     grad_count = 0
     grad_circle_count = 0
 
+    if circles is None:
+        no_circles_count += 1
+
+    # if no_circles_count > 20:
+        # make the rest of the codee
+
     if circles is not None:
+        no_circles_count = 0
+
         minSensor, maxSensor = 0, 400
 
         # draw the circles
+        # TODO: if no circles for 3 seconds,reset to previous working radius
+
         for i in range(len(circles[0])):
             x, y, r = circles[0][i]
             x, y, r = int(x), int(y), int(r)
@@ -632,15 +630,59 @@ def main(run_event, start_event):
         # log(data)
 
 
+def getPoint():
+    if len(data['radius']) > 0:
+        return data['radius'][-1]
+    return 0
+
+
+class Example(tk.Frame):
+    def __init__(self, root):
+        tk.Frame.__init__(self, master=root)
+        self.canvas = tk.Canvas(
+            self, background="black", height=250, width=300)
+        self.canvas.pack(side="top", fill="both", expand=True)
+
+        # create lines for velocity and torque
+        self.line = self.canvas.create_line(0, 0, 0, 0, fill="red")
+
+        # start the update process
+        self.update_plot()
+
+    def update_plot(self):
+        global x
+        v = getPoint()
+        # x = x+0.1
+        self.add_point(self.line, v)
+        self.canvas.xview_moveto(1.0)
+        self.after(100, self.update_plot)
+
+    def add_point(self, line, y):
+        coords = self.canvas.coords(line)
+        x = coords[-2] + 5
+        coords.append(x)
+        coords.append(y)
+        coords = coords[-200:]  # keep # of points to a manageable size
+        self.canvas.coords(line, *coords)
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+
 window = tk.Tk()
-buttonStart = tk.Button(text="Start Detection")
-buttonStop = tk.Button(text="Stop Detection")
-pidStart = tk.Button(text="Start PID")
-pidStop = tk.Button(text="Stop PID")
-label = tk.Label(text="Enter a radius value")
-entry = tk.Entry()
-button = tk.Button(text="Set Radius")
-buttonQuit = tk.Button(window, text="Exit Controller", command=window.destroy)
+controlFrame = tk.Frame(window)
+graphFrame = Example(window)
+
+buttonStart = tk.Button(controlFrame, text="Start Detection")
+buttonStop = tk.Button(controlFrame, text="Stop Detection")
+pidStart = tk.Button(controlFrame, text="Start PID")
+pidStop = tk.Button(controlFrame, text="Stop PID")
+label = tk.Label(controlFrame, text="Enter a radius value")
+entry = tk.Entry(controlFrame)
+button = tk.Button(controlFrame, text="Set Radius")
+labelOil = tk.Label(controlFrame, text="Enter oil pressure")
+entryOil = tk.Entry(controlFrame)
+buttonOil = tk.Button(controlFrame, text="Set Oil Pressure")
+buttonQuit = tk.Button(
+    controlFrame, text="Exit Controller", command=window.destroy)
 
 start_event = Event()
 start_pid = Event()
@@ -649,8 +691,18 @@ start_pid = Event()
 def radiusClick(event):
     global target_radius
     try:
+        # TODO: buffer how fast target radius actually gets to a big drop maybe like increments of 5 or 10
         target_radius = float(entry.get())
         print("Set target radius: ", target_radius)
+    except:
+        return
+
+
+def oilClick(event):
+    try:
+        new_oil = float(entryOil.get())
+        fgt_set_pressure(OIL, new_oil)
+        print("Set oil pressure: ", new_oil)
     except:
         return
 
@@ -688,18 +740,25 @@ def pidStopClick(event):
 window.geometry("500x200")
 button.bind('<Button>', radiusClick)
 # buttonQuit.bind('<Button>', quitClick)
+buttonOil.bind('<Button>', oilClick)
 buttonStart.bind('<Button>', startClick)
 buttonStop.bind('<Button>', stopClick)
 pidStart.bind('<Button>', pidStartClick)
 pidStop.bind('<Button>', pidStopClick)
 label.pack()
 entry.pack()
+labelOil.pack()
+entryOil.pack()
 buttonStart.pack()
 buttonStop.pack()
 button.pack()
+buttonOil.pack()
 pidStart.pack()
 pidStop.pack()
 buttonQuit.pack()
+
+controlFrame.pack()
+graphFrame.pack(side="top", fill="both", expand=True)
 
 if __name__ == '__main__':
     run_event = Event()
